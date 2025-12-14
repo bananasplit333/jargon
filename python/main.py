@@ -7,7 +7,7 @@ import numpy as np
 import threading
 
 # --- CONFIGURATION ---
-MODEL_DIR = "./parakeet_model"
+MODEL_DIR = "../data/parakeet_model"
 MODEL_SAMPLE_RATE = 16000
 HOTKEY = {keyboard.Key.ctrl_l, keyboard.Key.shift}
 
@@ -32,7 +32,7 @@ recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
     provider="cpu",
 )
 
-print("Ready! Hold CTRL + SHIFT to record.")
+print("onionsonsale!")
 
 # --- AUDIO CALLBACK ---
 def audio_callback(indata, frames, time, status):
@@ -72,7 +72,6 @@ def start_recording():
                 callback=audio_callback,
             )
             audio_stream.start()
-            print(f"Recording at {input_sample_rate} Hz...")
             return True
         except Exception as exc:
             audio_stream = None
@@ -86,7 +85,7 @@ def stop_recording():
             audio_stream.stop()
             audio_stream.close()
             audio_stream = None
-    print("Processing...")
+    print("Processing/.......")
     process_audio()
 
 # --- AUDIO PROCESSING ---
@@ -109,7 +108,6 @@ def process_audio():
 
     result = stream.result.text.strip()
     if result:
-        print(f"Typing: {result}")
         pyautogui.write(result + " ")
 
 # --- HOTKEY HANDLERS ---
