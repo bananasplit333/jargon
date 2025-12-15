@@ -1,6 +1,7 @@
 #[cfg(windows)]
 mod platform {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU32;
     use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
@@ -15,7 +16,6 @@ mod platform {
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_ARROW};
-    use windows::Win32::UI::WindowsAndMessaging::HCURSOR;
     use windows::Win32::UI::WindowsAndMessaging::{
         self as winmsg, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW,
         SetLayeredWindowAttributes, SetWindowPos, ShowWindow, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
@@ -48,7 +48,7 @@ mod platform {
     const WINDOW_STYLE_FLAGS: WINDOW_STYLE = winmsg::WS_POPUP;
     const ANIMATION_STEPS: u32 = 8;
     const ANIMATION_FRAME_MS: u64 = 14;
-    const CORNER_RADIUS: i32 = 6;
+    const CORNER_RADIUS: i32 = 5;
     // No wave/line animation constants; keep overlay minimal
     fn ensure_class_registered() -> Result<(), Error> {
         CLASS_REGISTERED
@@ -136,6 +136,10 @@ mod platform {
     static CLASS_REGISTERED: OnceLock<Result<(), Error>> = OnceLock::new();
     static METRICS: OnceLock<Mutex<OverlayMetrics>> = OnceLock::new();
     static ANIMATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    static LEVEL_MILLIS: AtomicU32 = AtomicU32::new(0);
+    static LEVEL_TICK: AtomicU64 = AtomicU64::new(0);
+    static FORCE_HOVER: AtomicBool = AtomicBool::new(false);
+    static LAST_POINTER_INSIDE: AtomicBool = AtomicBool::new(false);
 
     fn storage() -> &'static Mutex<Option<SharedHwnd>> {
         OVERLAY_HWND.get_or_init(|| Mutex::new(None))
@@ -168,13 +172,29 @@ mod platform {
                 let brush = CreateSolidBrush(COLORREF(0x000000));
                 let _ = FillRect(hdc, &RECT::from(ps.rcPaint), brush);
                 let _ = DeleteObject(brush.into());
+
+                let (hover, width, height) = {
+                    let guard = metrics_storage().lock().unwrap();
+                    (guard.hover, guard.current.width.max(1), guard.current.height.max(1))
+                };
+
+                if hover && height >= 12 {
+                    let level = (LEVEL_MILLIS.load(Ordering::Relaxed) as f32 / 1000.0)
+                        .clamp(0.0, 1.0);
+                    let tick = LEVEL_TICK.load(Ordering::Relaxed);
+                    draw_level_bars(hdc, width, height, level, tick);
+                }
+
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             winmsg::WM_MOUSEMOVE => {
                 let (x, y) = decode_mouse_coords(l_param);
                 let inside = pointer_inside_current(x, y);
-                let _ = handle_hover_change(inside);
+                LAST_POINTER_INSIDE.store(inside, Ordering::Relaxed);
+                if !FORCE_HOVER.load(Ordering::Relaxed) {
+                    let _ = handle_hover_change(inside);
+                }
                 if inside {
                     let mut tme = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -197,7 +217,10 @@ mod platform {
                 }
             }
             WM_MOUSELEAVE => {
-                let _ = handle_hover_change(false);
+                LAST_POINTER_INSIDE.store(false, Ordering::Relaxed);
+                if !FORCE_HOVER.load(Ordering::Relaxed) {
+                    let _ = handle_hover_change(false);
+                }
                 LRESULT(0)
             }
             winmsg::WM_DESTROY => {
@@ -274,6 +297,45 @@ mod platform {
         Ok(hwnd)
     }
 
+    fn draw_level_bars(hdc: windows::Win32::Graphics::Gdi::HDC, width: i32, height: i32, level: f32, tick: u64) {
+        let bar_count: i32 = 9;
+        let gap: i32 = 2;
+        let bar_width: i32 = 3;
+        let padding_y: i32 = 3;
+
+        let available_height = (height - padding_y * 2).max(1);
+        let min_bar_height = 2.min(available_height);
+        let max_bar_height = available_height.max(min_bar_height);
+
+        let total_width = bar_count * bar_width + (bar_count - 1) * gap;
+        let start_x = (((width - total_width) as f32) / 2.0).round() as i32;
+        let center_y = (height as f32 / 2.0).round() as i32;
+
+        let weights: [f32; 9] = [0.35, 0.55, 0.75, 0.95, 1.0, 0.95, 0.75, 0.55, 0.35];
+        let base_level = level.clamp(0.0, 1.0).powf(0.65);
+        let brush = unsafe { CreateSolidBrush(COLORREF(0x00FFFFFF)) };
+        for i in 0..bar_count {
+            let weight = weights.get(i as usize).copied().unwrap_or(1.0);
+            let phase = (tick as f32 * 0.22) + (i as f32 * 0.85);
+            let wobble = 0.75 + 0.25 * phase.sin();
+            let bar_level = (base_level * wobble * weight).clamp(0.0, 1.0);
+            let h = (min_bar_height as f32
+                + (max_bar_height - min_bar_height) as f32 * bar_level)
+                .round() as i32;
+            let left = start_x + i * (bar_width + gap);
+            let top = (center_y - h / 2).max(0);
+            let bottom = (center_y + (h - h / 2)).min(height);
+            let rect = RECT {
+                left,
+                top,
+                right: left + bar_width,
+                bottom,
+            };
+            let _ = unsafe { FillRect(hdc, &rect, brush) };
+        }
+        let _ = unsafe { DeleteObject(brush.into()) };
+    }
+
     fn apply_geometry(hwnd: HWND, geom: Geometry) -> Result<(), Error> {
         let width = geom.width.max(1);
         let height = geom.height.max(1);
@@ -315,6 +377,26 @@ mod platform {
         let hwnd = ensure_window()?;
         unsafe { let _ = InvalidateRect(hwnd, core::ptr::null(), 1); }
         animate_to(target)
+    }
+
+    pub fn set_hover_platform(active: bool) -> Result<(), Error> {
+        FORCE_HOVER.store(active, Ordering::SeqCst);
+        if active {
+            handle_hover_change(true)
+        } else {
+            handle_hover_change(LAST_POINTER_INSIDE.load(Ordering::Relaxed))
+        }
+    }
+
+    pub fn set_level_platform(level: f32) -> Result<(), Error> {
+        let clamped = level.clamp(0.0, 1.0);
+        LEVEL_MILLIS.store((clamped * 1000.0).round() as u32, Ordering::Relaxed);
+        LEVEL_TICK.fetch_add(1, Ordering::Relaxed);
+        let hwnd = ensure_window()?;
+        unsafe {
+            let _ = InvalidateRect(hwnd, core::ptr::null(), 1);
+        }
+        Ok(())
     }
 
     fn animate_to(target: Geometry) -> Result<(), Error> {
@@ -408,6 +490,8 @@ mod platform {
     pub fn hide() -> Result<(), Error> {
         let hwnd = ensure_window()?;
         ANIMATION_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        FORCE_HOVER.store(false, Ordering::SeqCst);
+        LAST_POINTER_INSIDE.store(false, Ordering::SeqCst);
         if let Some(metrics) = METRICS.get() {
             let mut guard = metrics.lock().unwrap();
             guard.hover = false;
@@ -451,6 +535,16 @@ pub fn hide() -> Result<(), String> {
     platform::hide().map_err(|e: windows::core::Error| e.to_string())
 }
 
+#[cfg(windows)]
+pub fn set_hover(active: bool) -> Result<(), String> {
+    platform::set_hover_platform(active).map_err(|e: windows::core::Error| e.to_string())
+}
+
+#[cfg(windows)]
+pub fn set_level(level: f32) -> Result<(), String> {
+    platform::set_level_platform(level).map_err(|e: windows::core::Error| e.to_string())
+}
+
 #[cfg(not(windows))]
 pub fn configure(width: i32, height: i32, x: i32, y: i32, hover_scale_x: f32, hover_scale_y: f32) -> Result<(), String> {
     platform::configure(width, height, x, y, hover_scale_x, hover_scale_y)
@@ -464,4 +558,14 @@ pub fn show() -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn hide() -> Result<(), String> {
     platform::hide()
+}
+
+#[cfg(not(windows))]
+pub fn set_hover(_active: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn set_level(_level: f32) -> Result<(), String> {
+    Ok(())
 }

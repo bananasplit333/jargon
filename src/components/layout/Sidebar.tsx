@@ -87,7 +87,7 @@ export const Sidebar: React.FC = () => {
 
         <div className="mt-auto bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-gray-900 dark:text-white">Flow Pro Trial 👋</span>
+            <span className="text-xs font-semibold text-gray-900 dark:text-white">Jargon Pro Trial 👋</span>
             <button className="text-gray-400 hover:text-gray-600">×</button>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-1.5 mb-2 dark:bg-gray-700">

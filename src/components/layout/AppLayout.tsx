@@ -1,8 +1,7 @@
 // src/components/layout/AppLayout.tsx
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
-import { invoke } from '@tauri-apps/api/core';
-import { Menu } from 'lucide-react';
+import { Menu, Minus, Square, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { MainPage } from '../pages/MainPage';
 
@@ -11,16 +10,25 @@ const COLLAPSE_BREAKPOINT = 960;
 
 export const AppLayout: React.FC = () => {
 	const [sidebarOpen, setSidebarOpen] = useState(true);
-	const [isCompact, setIsCompact] = useState(false);
+	const [isTauri, setIsTauri] = useState(false);
+	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
 	useEffect(() => {
 		if (typeof window === 'undefined') {
 			return;
 		}
 
+		(async () => {
+			try {
+				const core = await import('@tauri-apps/api/core');
+				setIsTauri(Boolean(core.isTauri?.() ?? true));
+			} catch {
+				setIsTauri(false);
+			}
+		})();
+
 		const handleResize = () => {
 			const compact = window.innerWidth < COLLAPSE_BREAKPOINT;
-			setIsCompact(compact);
 			setSidebarOpen(compact ? false : true);
 		};
 
@@ -29,19 +37,50 @@ export const AppLayout: React.FC = () => {
 		return () => window.removeEventListener('resize', handleResize);
 	}, []);
 
+	useEffect(() => {
+		const scrollContainer = scrollContainerRef.current;
+		if (!scrollContainer) {
+			return;
+		}
+
+		let timeoutId: number | undefined;
+		const onScroll = () => {
+			scrollContainer.setAttribute('data-scrolling', 'true');
+			window.clearTimeout(timeoutId);
+			timeoutId = window.setTimeout(() => {
+				scrollContainer.removeAttribute('data-scrolling');
+			}, 800);
+		};
+
+		scrollContainer.addEventListener('scroll', onScroll, { passive: true });
+		return () => {
+			scrollContainer.removeEventListener('scroll', onScroll);
+			window.clearTimeout(timeoutId);
+		};
+	}, []);
+
 	const toggleSidebar = useCallback(() => {
 		setSidebarOpen((prev) => !prev);
 	}, []);
 
-	const openOverlay = useCallback(() => {
-		if ((window as any).__TAURI__) {
-			invoke('overlay_show', { show: true }).catch((err) => {
-				console.error('overlay_show failed', err);
-			});
-		} else {
-			console.warn('Overlay button available in desktop build.');
-		}
-	}, []);
+	const minimize = useCallback(async () => {
+		if (!isTauri) return;
+		const { getCurrentWindow } = await import('@tauri-apps/api/window');
+		await getCurrentWindow().minimize();
+	}, [isTauri]);
+
+	const toggleMaximize = useCallback(async () => {
+		if (!isTauri) return;
+		const { getCurrentWindow } = await import('@tauri-apps/api/window');
+		await getCurrentWindow().toggleMaximize();
+	}, [isTauri]);
+
+	const close = useCallback(async () => {
+		if (!isTauri) return;
+		const { getCurrentWindow } = await import('@tauri-apps/api/window');
+		await getCurrentWindow().close();
+	}, [isTauri]);
+
 	return (
 		<div className="flex h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
 			<aside
@@ -52,26 +91,69 @@ export const AppLayout: React.FC = () => {
 				{sidebarOpen && <Sidebar />}
 			</aside>
 
-			<main className="flex-1 min-w-0 overflow-hidden">
-				<div className="flex items-center px-6 pt-6 gap-3">
+			<main className="flex flex-col flex-1 min-w-0 overflow-hidden">
+				<div className="flex items-center px-4 h-12 gap-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50/80 dark:bg-gray-900/80 backdrop-blur">
 					<button
 						onClick={toggleSidebar}
 						type="button"
-						className="h-10 w-10 flex items-center justify-center rounded-full border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+						data-tauri-drag-region="false"
+						className="h-9 w-9 flex items-center justify-center rounded-full border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
 						aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
 						aria-pressed={sidebarOpen}
 					>
 						<Menu className={`h-5 w-5 transition-transform ${sidebarOpen ? 'rotate-90' : ''}`} />
 					</button>
+
+					<div
+						className="flex-1 h-full flex items-center justify-center select-none text-xs font-medium tracking-wide text-gray-500 dark:text-gray-400 cursor-grab active:cursor-grabbing"
+						data-tauri-drag-region
+						aria-label="Window drag region"
+					>
+						Jargon
+					</div>
+
+					{isTauri && (
+						<div className="flex items-center gap-1" data-tauri-drag-region="false">
+							<button
+								type="button"
+								aria-label="Minimize"
+								onClick={minimize}
+								className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+							>
+								<Minus className="h-4 w-4" />
+							</button>
+							<button
+								type="button"
+								aria-label="Maximize"
+								onClick={toggleMaximize}
+								className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+							>
+								<Square className="h-4 w-4" />
+							</button>
+							<button
+								type="button"
+								aria-label="Close"
+								onClick={close}
+								className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition"
+							>
+								<X className="h-4 w-4" />
+							</button>
+						</div>
+					)}
 				</div>
-				<div className="container mx-auto px-6 py-6 max-w-5xl">
-					<Routes>
-						<Route path="/" element={<MainPage />} />
-						<Route path="/dictionary" element={<div>Dictionary</div>} />
-						<Route path="/snippets" element={<div>Snippets</div>} />
-						<Route path="/style" element={<div>Style</div>} />
-						<Route path="/notes" element={<div>Notes</div>} />
-					</Routes>
+				<div
+					ref={scrollContainerRef}
+					className="flex-1 min-h-0 overflow-y-auto scrollbar-thin scrollbar-auto-hide scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700 scrollbar-track-transparent"
+				>
+					<div className="container mx-auto px-6 py-6 max-w-5xl">
+						<Routes>
+							<Route path="/" element={<MainPage />} />
+							<Route path="/dictionary" element={<div>Dictionary</div>} />
+							<Route path="/snippets" element={<div>Snippets</div>} />
+							<Route path="/style" element={<div>Style</div>} />
+							<Route path="/notes" element={<div>Notes</div>} />
+						</Routes>
+					</div>
 				</div>
 			</main>
 		</div>

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -72,11 +73,23 @@ impl AppState {
 
 const OVERLAY_WIDTH_PX: i32 = 90;
 const OVERLAY_HEIGHT_PX: i32 = 5;
-const OVERLAY_HORIZONTAL_OFFSET_PX: i32 = 30;
+const OVERLAY_HORIZONTAL_OFFSET_PX: i32 = 0;
 const OVERLAY_VERTICAL_MARGIN_PX: i32 = 16;
 
 const OVERLAY_HOVER_SCALE_X: f32 = 1.15;
 const OVERLAY_HOVER_SCALE_Y: f32 = 5.0;
+
+// Track overlay visibility and debounce sequence for hover collapse dwell
+static OVERLAY_VISIBLE: OnceLock<AtomicBool> = OnceLock::new();
+static HOVER_DWELL_SEQ: OnceLock<AtomicU64> = OnceLock::new();
+
+fn overlay_visible_flag() -> &'static AtomicBool {
+    OVERLAY_VISIBLE.get_or_init(|| AtomicBool::new(false))
+}
+
+fn hover_dwell_seq() -> &'static AtomicU64 {
+    HOVER_DWELL_SEQ.get_or_init(|| AtomicU64::new(0))
+}
 
 
 #[cfg_attr(not(windows), allow(unused_variables))]
@@ -121,6 +134,11 @@ fn configure_overlay(app: &AppHandle) -> Result<(), String> {
 fn set_overlay_visibility(app: &AppHandle, visible: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
+        // Avoid redundant show/hide operations
+        let was = overlay_visible_flag().swap(visible, Ordering::SeqCst);
+        if was == visible {
+            return Ok(());
+        }
         if visible {
             configure_overlay(app)?;
             native_overlay::show()
@@ -144,22 +162,32 @@ fn set_overlay_visibility(app: &AppHandle, visible: bool) -> Result<(), String> 
 }
 
 fn dev_workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR points to src-tauri; go up one level to workspace root
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+        .expect("src-tauri should have a parent directory")
         .to_path_buf()
 }
 
 fn resolve_script_path(app: &AppHandle) -> PathBuf {
-    app.path()
-        .resolve("python/main.py", tauri::path::BaseDirectory::Resource)
-        .unwrap_or_else(|_| dev_workspace_root().join("python").join("main.py"))
+    // In dev mode, always use workspace root; in production, use Resource directory
+    let resource_path = app.path()
+        .resolve("python/main.py", tauri::path::BaseDirectory::Resource);
+    
+    match resource_path {
+        Ok(path) if path.exists() => path,
+        _ => dev_workspace_root().join("python").join("main.py"),
+    }
 }
 
 fn resolve_model_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .resolve("data/parakeet_model", tauri::path::BaseDirectory::Resource)
-        .unwrap_or_else(|_| dev_workspace_root().join("data").join("parakeet_model"))
+    let resource_path = app.path()
+        .resolve("data/parakeet_model", tauri::path::BaseDirectory::Resource);
+    
+    match resource_path {
+        Ok(path) if path.exists() => path,
+        _ => dev_workspace_root().join("data").join("parakeet_model"),
+    }
 }
 
 fn emit_status(app: &AppHandle, running: bool) {
@@ -194,7 +222,30 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
         let buf = BufReader::new(reader);
         for line in buf.lines().flatten() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                if value.get("type").and_then(|v| v.as_str()) == Some("transcript") {
+                if value.get("type").and_then(|v| v.as_str()) == Some("overlay") {
+                    if let Some(hover) = value.get("hover").and_then(|v| v.as_bool()) {
+                        if hover {
+                            let _ = set_overlay_visibility(&app, true);
+                            hover_dwell_seq().fetch_add(1, Ordering::SeqCst);
+                            let _ = crate::native_overlay::set_hover(true);
+                        } else {
+                            // Dwell for 30ms before collapsing; cancel if another event arrives
+                            let seq = hover_dwell_seq().fetch_add(1, Ordering::SeqCst) + 1;
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_millis(30));
+                                if hover_dwell_seq().load(Ordering::SeqCst) == seq {
+                                    let _ = crate::native_overlay::set_hover(false);
+                                }
+                            });
+                        }
+                        continue;
+                    }
+                } else if value.get("type").and_then(|v| v.as_str()) == Some("overlay_level") {
+                    if let Some(level) = value.get("level").and_then(|v| v.as_f64()) {
+                        let _ = crate::native_overlay::set_level(level as f32);
+                        continue;
+                    }
+                } else if value.get("type").and_then(|v| v.as_str()) == Some("transcript") {
                     if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
                         emit_transcript(&app, text);
                         continue;
@@ -218,6 +269,7 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     };
 
     let script_path = resolve_script_path(app);
+    eprintln!("[setup] resolved Python script path: {}", script_path.display());
     if !script_path.exists() {
         return Err(format!(
             "Python script not found at {}",
@@ -226,24 +278,81 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     }
 
     let model_dir = resolve_model_dir(app);
+    let python_dir = script_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dev_workspace_root().join("python"));
 
-    let mut command = Command::new("python");
-    command
-        .arg(script_path)
-        .arg("--hotkey")
-        .arg(config.hotkey)
-        .arg("--model-dir")
-        .arg(model_dir)
-        .arg("--type-into-active-app")
-        .arg(if config.type_into_active_app {
-            "true"
-        } else {
-            "false"
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // Build common args: run unbuffered for immediate stdout
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    args.push("-u".into());
+    // Run in module mode from the python directory, matching manual run
+    args.push("-m".into());
+    args.push("main".into());
+    args.push("--hotkey".into());
+    args.push(config.hotkey.clone().into());
+    args.push("--model-dir".into());
+    args.push(model_dir.as_os_str().to_owned());
+    args.push("--type-into-active-app".into());
+    args.push(if config.type_into_active_app { "true".into() } else { "false".into() });
 
-    let mut child = command.spawn().map_err(|err| format!("{err}"))?;
+    // On Windows prefer the launcher `py -3`; otherwise use `python`
+    #[cfg(windows)]
+    let mut child = {
+        let mut py_cmd = Command::new("py");
+        let mut py_args = Vec::with_capacity(args.len() + 1);
+        py_args.push("-3".into());
+        py_args.extend(args.iter().cloned());
+        eprintln!("[engine] spawn cwd: {}", python_dir.display());
+        eprintln!("[engine] spawn cmd: py {:?}", py_args);
+        py_cmd
+            .args(&py_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(python_dir.clone());
+        match py_cmd.spawn() {
+            Ok(ch) => {
+                eprintln!("[engine] started with 'py -3 -m main' (preferred)");
+                ch
+            }
+            Err(py_err) => {
+                let mut command = Command::new("python");
+                eprintln!("[engine] fallback spawn cmd: python {:?}", args);
+                command
+                    .args(&args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .current_dir(python_dir.clone());
+                match command.spawn() {
+                    Ok(ch) => {
+                        eprintln!("[engine] 'py -3 -m main' failed: {py_err}; started with 'python -m main'");
+                        ch
+                    }
+                    Err(py_fallback_err) => {
+                        return Err(format!(
+                            "Failed to start Python: py -3 error: {py_err}; python error: {py_fallback_err}"
+                        ));
+                    }
+                }
+            }
+        }
+    };
+
+    #[cfg(not(windows))]
+    let mut child = {
+        let mut command = Command::new("python");
+        eprintln!("[engine] spawn cwd: {}", python_dir.display());
+        eprintln!("[engine] spawn cmd: python {:?}", args);
+        command
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(python_dir.clone());
+        match command.spawn() {
+            Ok(ch) => ch,
+            Err(err) => return Err(format!("Failed to start Python: {err}")),
+        }
+    };
 
     if let Some(stdout) = child.stdout.take() {
         spawn_reader_thread(app.clone(), "stdout", stdout);
@@ -465,6 +574,14 @@ pub fn run() {
             let _ = configure_overlay(&handle_for_overlay);
             let _ = set_overlay_visibility(&handle_for_overlay, false);
 
+            // Auto-start the Python engine on app launch
+            eprintln!("[setup] auto-starting Python engine...");
+            let state_for_engine = app.state::<AppState>();
+            let handle_for_engine = app.handle().clone();
+            if let Err(e) = start_engine_inner(&handle_for_engine, &state_for_engine) {
+                eprintln!("[setup] failed to start Python engine: {}", e);
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 let state = {
                     let state_ref = app.state::<AppState>();
@@ -487,10 +604,10 @@ pub fn run() {
                             let _ = set_overlay_visibility(&overlay_event_handle, true);
                         }
                     }
-                });
+                });  
 
                 // Keep overlay always visible regardless of window focus/visibility
-                let main_handle = window.clone();
+                let _main_handle = window.clone();
                 std::thread::spawn(move || loop {
                     let show_overlay = true;
 
