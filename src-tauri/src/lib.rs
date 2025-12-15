@@ -4,9 +4,17 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+#[cfg(not(windows))]
+use tauri::{LogicalPosition, WebviewUrl, WebviewWindowBuilder};
+
+mod native_overlay;
+
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +67,79 @@ impl AppState {
             config: SttConfig::default(),
             child: None,
         })))
+    }
+}
+
+const OVERLAY_WIDTH_PX: i32 = 90;
+const OVERLAY_HEIGHT_PX: i32 = 5;
+const OVERLAY_HORIZONTAL_OFFSET_PX: i32 = 30;
+const OVERLAY_VERTICAL_MARGIN_PX: i32 = 16;
+
+const OVERLAY_HOVER_SCALE_X: f32 = 1.15;
+const OVERLAY_HOVER_SCALE_Y: f32 = 5.0;
+
+
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn configure_overlay(app: &AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let (x, y) = match app.primary_monitor() {
+            Ok(Some(monitor)) => {
+                let size = monitor.size();
+                let position = monitor.position();
+                let width = size.width as i32;
+                let mut computed_x = position.x
+                    + (width - OVERLAY_WIDTH_PX) / 2
+                    - OVERLAY_HORIZONTAL_OFFSET_PX;
+                if computed_x < position.x {
+                    computed_x = position.x;
+                }
+                let computed_y = position.y + OVERLAY_VERTICAL_MARGIN_PX;
+                (computed_x, computed_y)
+            }
+            _ => (0, OVERLAY_VERTICAL_MARGIN_PX),
+        };
+
+        return native_overlay::configure(
+            OVERLAY_WIDTH_PX.max(1),
+            OVERLAY_HEIGHT_PX.max(1),
+            x,
+            y,
+            OVERLAY_HOVER_SCALE_X,
+            OVERLAY_HOVER_SCALE_Y,
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+#[cfg_attr(windows, allow(unused_variables))]
+fn set_overlay_visibility(app: &AppHandle, visible: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if visible {
+            configure_overlay(app)?;
+            native_overlay::show()
+        } else {
+            native_overlay::hide()
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Some(window) = app.get_webview_window("overlay") {
+            if visible {
+                    let _: tauri::Result<()> = window.show();
+                let _: tauri::Result<()> = window.set_focus();
+            } else {
+                let _: tauri::Result<()> = window.hide();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -273,6 +354,13 @@ fn stt_restart(app: AppHandle, state: State<'_, AppState>) -> Result<(), String>
     Ok(())
 }
 
+#[tauri::command]
+fn overlay_show(app: AppHandle, show: bool) -> Result<(), String> {
+    set_overlay_visibility(&app, show)
+}
+
+// Removed: wave activation command; overlay remains minimal
+
 fn setup_tray(app: &tauri::App) -> Result<(), tauri::Error> {
     let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
     let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
@@ -291,25 +379,29 @@ fn setup_tray(app: &tauri::App) -> Result<(), tauri::Error> {
 
     TrayIconBuilder::new()
         .menu(&menu)
-        .on_tray_icon_event(|tray, event| {
+        .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {
             if matches!(event, TrayIconEvent::Click { .. }) {
                 if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
+                    let _: tauri::Result<()> = window.show();
                     let _ = window.set_focus();
                 }
+                let handle = tray.app_handle();
+                let _ = set_overlay_visibility(&handle, false);
             }
         })
-        .on_menu_event(|app_handle, event| match event.id().as_ref() {
+        .on_menu_event(|app_handle: &tauri::AppHandle, event: tauri::menu::MenuEvent| match event.id().as_ref() {
             "show" => {
                 if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
+                    let _: tauri::Result<()> = window.show();
                     let _ = window.set_focus();
                 }
+                let _ = set_overlay_visibility(app_handle, false);
             }
             "hide" => {
                 if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
+                    let _: tauri::Result<()> = window.hide();
                 }
+                let _ = set_overlay_visibility(app_handle, true);
             }
             "start" => {
                 let state = app_handle.state::<AppState>();
@@ -335,10 +427,52 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
 
+            #[cfg(not(windows))]
+            {
+                let default_width = OVERLAY_WIDTH_PX as f64;
+                let default_height = OVERLAY_HEIGHT_PX as f64;
+
+                let overlay = WebviewWindowBuilder::new(
+                    app,
+                    "overlay",
+                    WebviewUrl::App("overlay.html".into()),
+                )
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .inner_size(default_width, default_height)
+                .min_inner_size(0.0, 0.0)
+                .build()?;
+
+                if let Ok(Some(monitor)) = app.primary_monitor() {
+                    let size = monitor.size();
+                    let position = monitor.position();
+                    let mut x = position.x as f64
+                        + (size.width as f64 - default_width) / 2.0
+                        - OVERLAY_HORIZONTAL_OFFSET_PX as f64;
+                    if x < position.x as f64 {
+                        x = position.x as f64;
+                    }
+                    let y = position.y as f64 + OVERLAY_VERTICAL_MARGIN_PX as f64;
+                    let _ = overlay.set_position(LogicalPosition::new(x, y));
+                }
+                let _: tauri::Result<()> = overlay.hide();
+            }
+
+            let handle_for_overlay = app.handle().clone();
+            let _ = configure_overlay(&handle_for_overlay);
+            let _ = set_overlay_visibility(&handle_for_overlay, false);
+
             if let Some(window) = app.get_webview_window("main") {
-                let app_handle = app.handle().clone();
-                let state = app_handle.state::<AppState>().clone();
+                let state = {
+                    let state_ref = app.state::<AppState>();
+                    state_ref.inner().clone()
+                };
                 let window_for_event = window.clone();
+                let overlay_event_handle = app.handle().clone();
+                let overlay_poll_handle = app.handle().clone();
 
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -349,9 +483,24 @@ pub fn run() {
                             .unwrap_or(true);
                         if run_in_background {
                             api.prevent_close();
-                            let _ = window_for_event.hide();
+                            let _: tauri::Result<()> = window_for_event.hide();
+                            let _ = set_overlay_visibility(&overlay_event_handle, true);
                         }
                     }
+                });
+
+                // Poll window visibility/minimized state to control overlay presence
+                let main_handle = window.clone();
+                std::thread::spawn(move || loop {
+                    let show_overlay = match (main_handle.is_visible(), main_handle.is_minimized()) {
+                        (Ok(visible), Ok(minimized)) => !visible || minimized,
+                        (Ok(visible), Err(_)) => !visible,
+                        _ => false,
+                    };
+
+                    let _ = set_overlay_visibility(&overlay_poll_handle, show_overlay);
+
+                    std::thread::sleep(Duration::from_millis(250));
                 });
             }
 
@@ -363,7 +512,8 @@ pub fn run() {
             stt_get_status,
             stt_start,
             stt_stop,
-            stt_restart
+            stt_restart,
+            overlay_show
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
