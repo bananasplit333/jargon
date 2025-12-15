@@ -48,7 +48,7 @@ mod platform {
     const WINDOW_STYLE_FLAGS: WINDOW_STYLE = winmsg::WS_POPUP;
     const ANIMATION_STEPS: u32 = 8;
     const ANIMATION_FRAME_MS: u64 = 14;
-    const CORNER_RADIUS: i32 = 8;
+    const CORNER_RADIUS: i32 = 6;
     // No wave/line animation constants; keep overlay minimal
     fn ensure_class_registered() -> Result<(), Error> {
         CLASS_REGISTERED
@@ -144,10 +144,6 @@ mod platform {
     fn metrics_storage() -> &'static Mutex<OverlayMetrics> {
         METRICS.get_or_init(|| Mutex::new(OverlayMetrics::new()))
     }
-
-    // We won't rely on WM_MOUSELEAVE or mouse capture; instead, we
-    // toggle hover based on whether the current pointer position is
-    // inside the overlay bounds during WM_MOUSEMOVE.
 
     fn decode_mouse_coords(l_param: LPARAM) -> (i32, i32) {
         let raw = l_param.0 as u32;

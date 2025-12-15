@@ -489,14 +489,10 @@ pub fn run() {
                     }
                 });
 
-                // Poll window visibility/minimized state to control overlay presence
+                // Keep overlay always visible regardless of window focus/visibility
                 let main_handle = window.clone();
                 std::thread::spawn(move || loop {
-                    let show_overlay = match (main_handle.is_visible(), main_handle.is_minimized()) {
-                        (Ok(visible), Ok(minimized)) => !visible || minimized,
-                        (Ok(visible), Err(_)) => !visible,
-                        _ => false,
-                    };
+                    let show_overlay = true;
 
                     let _ = set_overlay_visibility(&overlay_poll_handle, show_overlay);
 
