@@ -56,7 +56,7 @@ export const MainPage: React.FC = () => {
           <div className="flex gap-6 p-5 border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 transition-colors">
             <span className="text-xs font-medium text-gray-400 w-16 pt-1">04:21 PM</span>
             <p className="flex-1 text-gray-700 dark:text-gray-300 leading-relaxed">
-              I want to figure out how to actually design my app. So I have created a speech-to-text component that works logically very well, but now I need to figure out how to actually design the application to maximize the pretty factor...
+             penispienwiernepoirnepneppenispenis......
             </p>
           </div>
 

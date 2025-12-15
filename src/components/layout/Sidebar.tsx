@@ -1,8 +1,15 @@
 // src/components/layout/Sidebar.tsx
 import React from 'react';
-import { 
-  Home, Book, Layers, Type, FileText, 
-  Settings, HelpCircle, Users, Zap 
+import {
+  Home,
+  Book,
+  Layers,
+  Type,
+  FileText,
+  Settings,
+  HelpCircle,
+  Users,
+  Zap,
 } from 'lucide-react';
 import { NavLink } from "react-router"
 
@@ -16,7 +23,7 @@ const mainNav = [
 
 const utilityNav = [
   { name: 'Invite your team', icon: Users },
-  { name: 'Get a free month', icon: Zap }, 
+  { name: 'Get a free month', icon: Zap },
   { name: 'Settings', icon: Settings },
   { name: 'Help', icon: HelpCircle },
 ];
@@ -59,7 +66,7 @@ const NavItem: React.FC<NavItemProps> = ({ name, Icon, to }) => (
 export const Sidebar: React.FC = () => {
   return (
     <div className="flex flex-col h-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-      <div className="flex items-center h-16 px-6">
+      <div className="flex items-center h-16 px-6 justify-between">
         <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
           <div className="w-6 h-6 bg-purple-600 rounded-md flex items-center justify-center">
             <span className="text-white text-xs">J</span>
@@ -71,7 +78,7 @@ export const Sidebar: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col overflow-y-auto px-4 gap-y-6 py-4">
+      <div className="flex-1 flex flex-col overflow-hidden px-4 gap-y-6 py-4">
         <nav className="space-y-1">
           {mainNav.map((item) => (
             <NavItem key={item.name} name={item.name} Icon={item.icon} to={item.to} />
