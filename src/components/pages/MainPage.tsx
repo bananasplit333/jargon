@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Info } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
+import confetti from 'canvas-confetti';
 
 type TranscriptEvent = {
   text: string;
@@ -157,16 +158,8 @@ export const MainPage: React.FC = () => {
       {/* 1. Welcome Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
-          Welcome back, Jae
+          Welcome back. Ready to dictate?
         </h1>
-        {/* Stats Pill */}
-        <div className="flex items-center gap-4 bg-white dark:bg-gray-800 px-4 py-2 rounded-full shadow-sm text-xs font-medium border border-gray-100 dark:border-gray-700 text-gray-600 dark:text-gray-300">
-          <span className="flex items-center gap-1">👋 0 week</span>
-          <span className="text-gray-300">|</span>
-          <span className="flex items-center gap-1">🚀 145 words</span>
-          <span className="text-gray-300">|</span>
-          <span className="flex items-center gap-1">🏆 159 WPM</span>
-        </div>
       </div>
 
       {/* 2. Hero Banner (Yellow Box) */}
@@ -176,10 +169,11 @@ export const MainPage: React.FC = () => {
             Hold down <span className="font-bold">Ctrl+Shift</span> to dictate in any app
           </h2>
           <p className="text-gray-700 dark:text-yellow-100/80 max-w-xl leading-relaxed">
-            Flow works in all your apps. Try it in <b>email</b>, <b>messages</b>, <b>docs</b> or <b>anywhere else</b>. 
-            Use ctrl + win + space for hands-free mode.
+            placeholder text
           </p>
-          <button className="mt-4 px-5 py-2.5 bg-gray-900 hover:bg-black text-white text-sm font-medium rounded-lg transition-colors shadow-lg">
+          <button className="mt-4 px-5 py-2.5 bg-gray-900 hover:bg-black text-white text-sm font-medium rounded-lg transition-colors shadow-lg"
+            onClick={() => confetti()}
+          >
             See how it works
           </button>
         </div>

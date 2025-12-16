@@ -15,10 +15,7 @@ import { NavLink } from "react-router"
 
 const mainNav = [
   { name: 'Home', icon: Home, to: '/' },
-  { name: 'Dictionary', icon: Book, to: '/dictionary' },
-  { name: 'Snippets', icon: Layers, to: '/snippets' },
-  { name: 'Style', icon: Type, to: '/style' },
-  { name: 'Notes', icon: FileText, to: '/notes' },
+  { name: 'Settings', icon: Settings, to: '/settings' },
 ];
 
 const utilityNav = [

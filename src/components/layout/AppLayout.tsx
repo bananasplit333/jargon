@@ -4,6 +4,7 @@ import { Routes, Route } from 'react-router-dom';
 import { Menu, Minus, Square, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { MainPage } from '../pages/MainPage';
+import { SettingsPage } from '../pages/SettingsPage';
 
 const COLLAPSE_BREAKPOINT = 960;
 
@@ -149,7 +150,7 @@ export const AppLayout: React.FC = () => {
 						<Routes>
 							<Route path="/" element={<MainPage />} />
 							<Route path="/dictionary" element={<div>Dictionary</div>} />
-							<Route path="/snippets" element={<div>Snippets</div>} />
+							<Route path="/settings" element={<div><SettingsPage /></div>} />
 							<Route path="/style" element={<div>Style</div>} />
 							<Route path="/notes" element={<div>Notes</div>} />
 						</Routes>
