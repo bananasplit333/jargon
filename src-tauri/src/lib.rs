@@ -3,19 +3,19 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[cfg(windows)]
+use std::sync::atomic::AtomicBool;
+
 #[cfg(not(windows))]
 use tauri::{LogicalPosition, WebviewUrl, WebviewWindowBuilder};
 
 mod native_overlay;
-
-#[cfg(windows)]
-use std::os::windows::process::ExitStatusExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,13 +76,17 @@ const OVERLAY_HEIGHT_PX: i32 = 5;
 const OVERLAY_HORIZONTAL_OFFSET_PX: i32 = 0;
 const OVERLAY_VERTICAL_MARGIN_PX: i32 = 16;
 
+#[cfg(windows)]
 const OVERLAY_HOVER_SCALE_X: f32 = 1.15;
+#[cfg(windows)]
 const OVERLAY_HOVER_SCALE_Y: f32 = 5.0;
 
 // Track overlay visibility and debounce sequence for hover collapse dwell
+#[cfg(windows)]
 static OVERLAY_VISIBLE: OnceLock<AtomicBool> = OnceLock::new();
 static HOVER_DWELL_SEQ: OnceLock<AtomicU64> = OnceLock::new();
 
+#[cfg(windows)]
 fn overlay_visible_flag() -> &'static AtomicBool {
     OVERLAY_VISIBLE.get_or_init(|| AtomicBool::new(false))
 }
@@ -340,17 +344,37 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
 
     #[cfg(not(windows))]
     let mut child = {
-        let mut command = Command::new("python");
         eprintln!("[engine] spawn cwd: {}", python_dir.display());
-        eprintln!("[engine] spawn cmd: python {:?}", args);
-        command
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(python_dir.clone());
-        match command.spawn() {
-            Ok(ch) => ch,
-            Err(err) => return Err(format!("Failed to start Python: {err}")),
+
+        let mut last_err: Option<(String, std::io::Error)> = None;
+        let mut started: Option<Child> = None;
+        for exe in ["python3", "python"] {
+            let mut command = Command::new(exe);
+            eprintln!("[engine] spawn cmd: {exe} {:?}", args);
+            command
+                .args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .current_dir(python_dir.clone());
+
+            match command.spawn() {
+                Ok(ch) => {
+                    started = Some(ch);
+                    break;
+                }
+                Err(err) => last_err = Some((exe.to_string(), err)),
+            }
+        }
+
+        match started {
+            Some(ch) => ch,
+            None => {
+                let message = match last_err {
+                    Some((exe, err)) => format!("Failed to start Python ({exe}): {err}"),
+                    None => "Failed to start Python".to_string(),
+                };
+                return Err(message);
+            }
         }
     };
 
@@ -381,13 +405,13 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
             };
 
             match child.try_wait() {
-                Ok(Some(status)) => Some(status),
+                Ok(Some(status)) => Some(Ok(status)),
                 Ok(None) => None,
-                Err(_) => Some(std::process::ExitStatus::from_raw(1)),
+                Err(err) => Some(Err(err)),
             }
         };
 
-        if let Some(status) = exit_status {
+        if let Some(exit_status) = exit_status {
             {
                 let mut guard = match state_for_monitor.0.lock() {
                     Ok(g) => g,
@@ -396,7 +420,10 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
                 guard.child = None;
             }
             emit_status(&app_for_monitor, false);
-            emit_log(&app_for_monitor, "engine", &format!("python exited: {status}"));
+            match exit_status {
+                Ok(status) => emit_log(&app_for_monitor, "engine", &format!("python exited: {status}")),
+                Err(err) => emit_log(&app_for_monitor, "engine", &format!("python monitor error: {err}")),
+            }
             return;
         }
 

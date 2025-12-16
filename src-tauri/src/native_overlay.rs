@@ -504,21 +504,6 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
-mod platform {
-    pub fn configure(_width: i32, _height: i32, _x: i32, _y: i32, _hover_scale_x: f32, _hover_scale_y: f32) -> Result<(), String> {
-        Ok(())
-    }
-
-    pub fn show() -> Result<(), String> {
-        Ok(())
-    }
-
-    pub fn hide() -> Result<(), String> {
-        Ok(())
-    }
-}
-
 #[cfg(windows)]
 pub fn configure(width: i32, height: i32, x: i32, y: i32, hover_scale_x: f32, hover_scale_y: f32) -> Result<(), String> {
     platform::configure(width, height, x, y, hover_scale_x, hover_scale_y)
@@ -543,21 +528,6 @@ pub fn set_hover(active: bool) -> Result<(), String> {
 #[cfg(windows)]
 pub fn set_level(level: f32) -> Result<(), String> {
     platform::set_level_platform(level).map_err(|e: windows::core::Error| e.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn configure(width: i32, height: i32, x: i32, y: i32, hover_scale_x: f32, hover_scale_y: f32) -> Result<(), String> {
-    platform::configure(width, height, x, y, hover_scale_x, hover_scale_y)
-}
-
-#[cfg(not(windows))]
-pub fn show() -> Result<(), String> {
-    platform::show()
-}
-
-#[cfg(not(windows))]
-pub fn hide() -> Result<(), String> {
-    platform::hide()
 }
 
 #[cfg(not(windows))]
