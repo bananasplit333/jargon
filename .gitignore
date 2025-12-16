@@ -31,6 +31,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 
 # Model files
 data/parakeet_model/
