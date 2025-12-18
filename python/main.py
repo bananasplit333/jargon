@@ -1,5 +1,6 @@
 print("[python] Engine starting…", flush=True)
 import sys
+import os
 import argparse
 import sherpa_onnx
 import sounddevice as sd
@@ -21,6 +22,9 @@ MODEL_SAMPLE_RATE = 16000
 CTRL_KEYS = {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
 SHIFT_KEYS = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
 TYPE_INTO_ACTIVE_APP = True
+PASTE_MODE = os.getenv("JARGON_PASTE_MODE", "auto").strip().lower()
+if PASTE_MODE not in {"auto", "clipboard", "typing"}:
+    PASTE_MODE = "auto"
 
 # --- STATE ---
 pressed = set()
@@ -30,10 +34,14 @@ audio_queue = queue.Queue()
 audio_stream = None
 input_sample_rate = MODEL_SAMPLE_RATE
 lock = threading.Lock()
+state_lock = threading.Lock()
 level_lock = threading.Lock()
 latest_level = 0.0
 level_thread = None
 level_stop_event = threading.Event()
+poll_thread = None
+poll_stop_event = threading.Event()
+USE_POLLING_HOTKEY = sys.platform.startswith("win")
 
 print("Initializing Parakeet (Sherpa-ONNX)...")
 
@@ -88,6 +96,27 @@ def resample_audio(audio, src_rate, target_rate):
 
 
 _WIN_CLIPBOARD_API_INITIALIZED = False
+_WIN_KEY_API_INITIALIZED = False
+
+
+def _init_win_key_api(user32) -> None:
+    global _WIN_KEY_API_INITIALIZED
+    if _WIN_KEY_API_INITIALIZED:
+        return
+
+    user32.GetAsyncKeyState.argtypes = [wintypes.INT]
+    user32.GetAsyncKeyState.restype = wintypes.SHORT
+    _WIN_KEY_API_INITIALIZED = True
+
+
+def _win_hotkey_physical_down() -> bool:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _init_win_key_api(user32)
+    VK_CONTROL = 0x11
+    VK_SHIFT = 0x10
+    ctrl_down = (user32.GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0
+    shift_down = (user32.GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0
+    return ctrl_down and shift_down
 
 
 def _init_win_clipboard_api(user32, kernel32) -> None:
@@ -193,32 +222,52 @@ def _win_clipboard_set_text(text: str) -> bool:
     finally:
         user32.CloseClipboard()
 
+def _win_try_set_clipboard_text(text: str, timeout_s: float = 0.5) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            if _win_clipboard_set_text(text):
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+
+
+def _type_into_active_app(text: str) -> None:
+    previous_pause = pyautogui.PAUSE
+    try:
+        pyautogui.PAUSE = 0
+        pyautogui.write(text, interval=0)
+    finally:
+        pyautogui.PAUSE = previous_pause
+
 
 def paste_into_active_app(text: str) -> None:
-    if sys.platform.startswith("win"):
+    if sys.platform.startswith("win") and PASTE_MODE != "typing":
         previous = None
         try:
             previous = _win_clipboard_get_text()
         except Exception:
             previous = None
-        try:
-            for _ in range(8):
-                if _win_clipboard_set_text(text):
-                    print("[python] Paste method: clipboard", flush=True)
-                    pyautogui.hotkey("ctrl", "v")
-                    time.sleep(0.06)
-                    if previous is not None:
-                        for _ in range(5):
-                            if _win_clipboard_set_text(previous):
-                                break
-                            time.sleep(0.01)
-                    return
-                time.sleep(0.01)
-        except Exception:
-            pass
-
-        print("[python] Paste method: fallback-typing", file=sys.stderr, flush=True)
-    pyautogui.write(text)
+        if _win_try_set_clipboard_text(text):
+            print("[python] Paste method: clipboard", flush=True)
+            hotkey_ok = True
+            try:
+                pyautogui.hotkey("ctrl", "v")
+            except Exception:
+                hotkey_ok = False
+            time.sleep(0.12)
+            if previous is not None:
+                _win_try_set_clipboard_text(previous, timeout_s=0.2)
+            if hotkey_ok:
+                return
+        if PASTE_MODE == "clipboard":
+            print("[python] Paste method: clipboard failed; falling back to typing", file=sys.stderr, flush=True)
+        else:
+            print("[python] Paste method: fallback-typing", file=sys.stderr, flush=True)
+    _type_into_active_app(text)
 
 # --- RECORDING CONTROL ---
 def start_recording():
@@ -324,45 +373,108 @@ def is_hotkey_pressed() -> bool:
 
 def on_press(key):
     global recording, hotkey_active
+    if USE_POLLING_HOTKEY:
+        return
     pressed.add(key)
     if not hotkey_active and is_hotkey_pressed():
-        hotkey_active = True
-        # Try to start recording, but expand overlay regardless of success
-        if not recording and start_recording():
-            recording = True
-        sys.stdout.write(json.dumps({"type": "overlay", "hover": True}) + "\n")
-        sys.stdout.flush()
+        begin_dictation()
 
 
 def on_release(key):
     global recording, hotkey_active
+    if USE_POLLING_HOTKEY:
+        return
     if key in pressed:
         pressed.remove(key)
     if hotkey_active and not is_hotkey_pressed():
-        hotkey_active = False
-        if recording:
-            recording = False
-            stop_recording()
-        # Signal overlay collapse regardless
-        sys.stdout.write(json.dumps({"type": "overlay", "hover": False}) + "\n")
+        end_dictation()
+
+
+def begin_dictation():
+    global recording, hotkey_active
+    with state_lock:
+        if hotkey_active:
+            return
+        hotkey_active = True
+    # Try to start recording, but expand overlay regardless of success
+    if not recording and start_recording():
+        recording = True
+        sys.stdout.write(json.dumps({"type": "dictation_start"}) + "\n")
         sys.stdout.flush()
+    sys.stdout.write(json.dumps({"type": "overlay", "hover": True}) + "\n")
+    sys.stdout.flush()
+
+
+def end_dictation():
+    global recording, hotkey_active
+    with state_lock:
+        if not hotkey_active:
+            return
+        hotkey_active = False
+    if recording:
+        recording = False
+        sys.stdout.write(json.dumps({"type": "dictation_stop"}) + "\n")
+        sys.stdout.flush()
+        stop_recording()
+    # Signal overlay collapse regardless
+    sys.stdout.write(json.dumps({"type": "overlay", "hover": False}) + "\n")
+    sys.stdout.flush()
+
+
+def hotkey_poll_loop():
+    down_since = None
+    up_since = None
+    while not poll_stop_event.is_set():
+        try:
+            down = _win_hotkey_physical_down()
+        except Exception:
+            down = False
+        now = time.monotonic()
+        if down:
+            up_since = None
+            if not hotkey_active:
+                if down_since is None:
+                    down_since = now
+                elif now - down_since >= 0.03:
+                    down_since = None
+                    begin_dictation()
+        else:
+            down_since = None
+            if hotkey_active:
+                if up_since is None:
+                    up_since = now
+                elif now - up_since >= 0.05:
+                    up_since = None
+                    end_dictation()
+        time.sleep(0.01)
 
 # --- MAIN LOOP ---
 def main():
-    global MODEL_DIR, TYPE_INTO_ACTIVE_APP
+    global MODEL_DIR, TYPE_INTO_ACTIVE_APP, PASTE_MODE
     # Parse command-line arguments from Tauri
     parser = argparse.ArgumentParser(description="Speech-to-text engine")
     parser.add_argument("--hotkey", type=str, help="Hotkey combination (ignored for now; hardcoded Ctrl+Shift)")
     parser.add_argument("--model-dir", type=str, default=MODEL_DIR, help="Path to the ONNX model directory")
     parser.add_argument("--type-into-active-app", type=str, default="true", help="Type into active app (true/false)")
+    parser.add_argument("--paste-mode", type=str, default=PASTE_MODE, help="Paste method: auto, clipboard, typing")
     args = parser.parse_args()
     
     MODEL_DIR = args.model_dir
     TYPE_INTO_ACTIVE_APP = args.type_into_active_app.lower() == "true"
+    PASTE_MODE = args.paste_mode.strip().lower()
+    if PASTE_MODE not in {"auto", "clipboard", "typing"}:
+        PASTE_MODE = "auto"
     
     print(f"[python] Model dir: {MODEL_DIR}", flush=True)
     print(f"[python] Type into active app: {TYPE_INTO_ACTIVE_APP}", flush=True)
+    print(f"[python] Paste mode: {PASTE_MODE}", flush=True)
     
+    if USE_POLLING_HOTKEY:
+        global poll_thread
+        poll_stop_event.clear()
+        poll_thread = threading.Thread(target=hotkey_poll_loop, daemon=True)
+        poll_thread.start()
+
     # Start the hotkey listener and block so the process stays alive.
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()

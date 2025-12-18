@@ -7,12 +7,26 @@ import { MainPage } from '../pages/MainPage';
 import { SettingsPage } from '../pages/SettingsPage';
 
 const COLLAPSE_BREAKPOINT = 960;
+const DICTATION_DING_SRC = '/data/sounds/dictation-start.wav';
 
+type DictationSoundState = {
+	active: boolean;
+	lastPlayedMs: number;
+};
+
+const getDictationSoundState = () => {
+	const win = window as Window & { __jargonDictationSound?: DictationSoundState };
+	if (!win.__jargonDictationSound) {
+		win.__jargonDictationSound = { active: false, lastPlayedMs: 0 };
+	}
+	return win.__jargonDictationSound;
+};
 
 export const AppLayout: React.FC = () => {
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [isTauri, setIsTauri] = useState(false);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+	const dingAudioRef = useRef<HTMLAudioElement | null>(null);
 
 	useEffect(() => {
 		if (typeof window === 'undefined') {
@@ -36,6 +50,80 @@ export const AppLayout: React.FC = () => {
 		handleResize();
 		window.addEventListener('resize', handleResize);
 		return () => window.removeEventListener('resize', handleResize);
+	}, []);
+
+	useEffect(() => {
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		let cancelled = false;
+		let unlisten: null | (() => void) = null;
+		dingAudioRef.current = new Audio(DICTATION_DING_SRC);
+		dingAudioRef.current.preload = 'auto';
+		const dictationState = getDictationSoundState();
+
+		const playDing = async () => {
+			const audio = dingAudioRef.current;
+			if (!audio) {
+				return;
+			}
+			const now = Date.now();
+			if (now - dictationState.lastPlayedMs < 200) {
+				return;
+			}
+			dictationState.lastPlayedMs = now;
+			audio.currentTime = 0;
+			try {
+				await audio.play();
+			} catch {
+				// Ignore autoplay or missing-file errors.
+			}
+		};
+
+		(async () => {
+			try {
+				const core = await import('@tauri-apps/api/core');
+				const event = await import('@tauri-apps/api/event');
+				const stopStartListening = await event.listen('stt:dictation-start', async () => {
+					if (dictationState.active) {
+						return;
+					}
+					dictationState.active = true;
+					try {
+						const enabled = await core.invoke<boolean>('sound_get_enabled');
+						if (!enabled) {
+							return;
+						}
+						await playDing();
+					} catch (err) {
+						console.warn('Failed to play dictation sound', err);
+					}
+				});
+				const stopStopListening = await event.listen('stt:dictation-stop', () => {
+					dictationState.active = false;
+				});
+				if (cancelled) {
+					stopStartListening();
+					stopStopListening();
+					return;
+				}
+				unlisten = () => {
+					stopStartListening();
+					stopStopListening();
+				};
+			} catch (err) {
+				console.warn('Dictation sound listener not available in this environment', err);
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+			if (unlisten) {
+				unlisten();
+			}
+			dingAudioRef.current = null;
+		};
 	}, []);
 
 	useEffect(() => {

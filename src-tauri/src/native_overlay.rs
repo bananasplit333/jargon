@@ -48,7 +48,7 @@ mod platform {
     const WINDOW_STYLE_FLAGS: WINDOW_STYLE = winmsg::WS_POPUP;
     const ANIMATION_STEPS: u32 = 8;
     const ANIMATION_FRAME_MS: u64 = 14;
-    const CORNER_RADIUS: i32 = 5;
+    const CORNER_RADIUS: i32 = 3;
     // No wave/line animation constants; keep overlay minimal
     fn ensure_class_registered() -> Result<(), Error> {
         CLASS_REGISTERED
@@ -502,6 +502,7 @@ mod platform {
         }
         Ok(())
     }
+
 }
 
 #[cfg(not(windows))]

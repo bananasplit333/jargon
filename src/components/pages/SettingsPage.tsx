@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 // --- 1. Reusable UI Components ---
 
@@ -90,6 +90,53 @@ const SystemSection = () => {
   const [showInDock, setShowInDock] = useState(true);
   const [soundEffects, setSoundEffects] = useState(true);
   const [muteMusic, setMuteMusic] = useState(true);
+  const [isTauri, setIsTauri] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const core = await import('@tauri-apps/api/core');
+        const tauri = Boolean(core.isTauri?.() ?? true);
+        if (!active) {
+          return;
+        }
+        setIsTauri(tauri);
+        if (!tauri) {
+          return;
+        }
+        const enabled = await core.invoke<boolean>('sound_get_enabled');
+        if (active) {
+          setSoundEffects(Boolean(enabled));
+        }
+      } catch {
+        if (active) {
+          setIsTauri(false);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSoundEffectsChange = useCallback(
+    (next: boolean) => {
+      setSoundEffects(next);
+      if (!isTauri) {
+        return;
+      }
+      void (async () => {
+        try {
+          const core = await import('@tauri-apps/api/core');
+          await core.invoke('sound_set_enabled', { enabled: next });
+        } catch (err) {
+          console.warn('Failed to update sound effects setting', err);
+        }
+      })();
+    },
+    [isTauri],
+  );
 
   return (
     <div className="space-y-2">
@@ -116,7 +163,7 @@ const SystemSection = () => {
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1">Sound</h3>
         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 shadow-sm px-6">
           <SettingsRow label="Dictation sound effects">
-            <ToggleSwitch checked={soundEffects} onChange={setSoundEffects} />
+            <ToggleSwitch checked={soundEffects} onChange={handleSoundEffectsChange} />
           </SettingsRow>
           <SettingsRow label="Mute music while dictating" isLast={true}>
             <ToggleSwitch checked={muteMusic} onChange={setMuteMusic} />

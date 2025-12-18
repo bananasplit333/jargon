@@ -11,6 +11,7 @@ import {
   Users,
   Zap,
 } from 'lucide-react';
+import jargonLogo from "../../../assets/jargon_logo.jpg";
 import { NavLink } from "react-router"
 
 const mainNav = [
@@ -66,7 +67,7 @@ export const Sidebar: React.FC = () => {
       <div className="flex items-center h-16 px-6 justify-between">
         <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
           <div className="w-6 h-6 bg-purple-600 rounded-md flex items-center justify-center">
-            <span className="text-white text-xs">J</span>
+            <img src={jargonLogo} alt="Jargon Logo" className="w-full h-full" />
           </div>
           <span>Jargon</span>
           <span className="ml-2 px-2 py-0.5 text-[10px] uppercase font-bold text-white bg-purple-500 rounded-full">

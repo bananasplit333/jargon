@@ -82,6 +82,9 @@ const OVERLAY_HOVER_SCALE_Y: f32 = 5.0;
 // Track overlay visibility and debounce sequence for hover collapse dwell
 static OVERLAY_VISIBLE: OnceLock<AtomicBool> = OnceLock::new();
 static HOVER_DWELL_SEQ: OnceLock<AtomicU64> = OnceLock::new();
+static SOUND_EFFECTS_ENABLED: OnceLock<AtomicBool> = OnceLock::new();
+static DICTATION_ACTIVE: OnceLock<AtomicBool> = OnceLock::new();
+static DICTATION_LAST_START_MS: OnceLock<AtomicU64> = OnceLock::new();
 
 fn overlay_visible_flag() -> &'static AtomicBool {
     OVERLAY_VISIBLE.get_or_init(|| AtomicBool::new(false))
@@ -89,6 +92,47 @@ fn overlay_visible_flag() -> &'static AtomicBool {
 
 fn hover_dwell_seq() -> &'static AtomicU64 {
     HOVER_DWELL_SEQ.get_or_init(|| AtomicU64::new(0))
+}
+
+fn sound_effects_enabled_flag() -> &'static AtomicBool {
+    SOUND_EFFECTS_ENABLED.get_or_init(|| AtomicBool::new(true))
+}
+
+fn dictation_active_flag() -> &'static AtomicBool {
+    DICTATION_ACTIVE.get_or_init(|| AtomicBool::new(false))
+}
+
+fn dictation_last_start_ms() -> &'static AtomicU64 {
+    DICTATION_LAST_START_MS.get_or_init(|| AtomicU64::new(0))
+}
+
+fn now_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn emit_dictation_start(app: &AppHandle) {
+    let now = now_millis();
+    let last = dictation_last_start_ms().load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 200 {
+        return;
+    }
+    if dictation_active_flag()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        dictation_last_start_ms().store(now, Ordering::SeqCst);
+        let _ = app.emit("stt:dictation-start", ());
+    }
+}
+
+fn emit_dictation_stop(app: &AppHandle) {
+    if dictation_active_flag().swap(false, Ordering::SeqCst) {
+        let _ = app.emit("stt:dictation-stop", ());
+    }
 }
 
 
@@ -240,6 +284,12 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
                         }
                         continue;
                     }
+                } else if value.get("type").and_then(|v| v.as_str()) == Some("dictation_start") {
+                    emit_dictation_start(&app);
+                    continue;
+                } else if value.get("type").and_then(|v| v.as_str()) == Some("dictation_stop") {
+                    emit_dictation_stop(&app);
+                    continue;
                 } else if value.get("type").and_then(|v| v.as_str()) == Some("overlay_level") {
                     if let Some(level) = value.get("level").and_then(|v| v.as_f64()) {
                         let _ = crate::native_overlay::set_level(level as f32);
@@ -464,6 +514,17 @@ fn stt_restart(app: AppHandle, state: State<'_, AppState>) -> Result<(), String>
 }
 
 #[tauri::command]
+fn sound_get_enabled() -> Result<bool, String> {
+    Ok(sound_effects_enabled_flag().load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+fn sound_set_enabled(enabled: bool) -> Result<(), String> {
+    sound_effects_enabled_flag().store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
 fn overlay_show(app: AppHandle, show: bool) -> Result<(), String> {
     set_overlay_visibility(&app, show)
 }
@@ -626,6 +687,8 @@ pub fn run() {
             stt_start,
             stt_stop,
             stt_restart,
+            sound_get_enabled,
+            sound_set_enabled,
             overlay_show
         ])
         .run(tauri::generate_context!())
