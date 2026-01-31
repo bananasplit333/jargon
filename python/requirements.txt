@@ -1,0 +1,5 @@
+sherpa-onnx
+sounddevice
+pynput
+pyautogui
+numpy

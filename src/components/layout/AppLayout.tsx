@@ -61,23 +61,27 @@ export const AppLayout: React.FC = () => {
 		let unlisten: null | (() => void) = null;
 		dingAudioRef.current = new Audio(DICTATION_DING_SRC);
 		dingAudioRef.current.preload = 'auto';
+		dingAudioRef.current.onerror = (e) => console.error('[sound] audio load error:', e);
+		dingAudioRef.current.oncanplaythrough = () => console.log('[sound] audio loaded and ready');
 		const dictationState = getDictationSoundState();
 
 		const playDing = async () => {
 			const audio = dingAudioRef.current;
 			if (!audio) {
+				console.log('[sound] no audio element');
 				return;
 			}
 			const now = Date.now();
 			if (now - dictationState.lastPlayedMs < 200) {
+				console.log('[sound] debounced - too soon');
 				return;
 			}
 			dictationState.lastPlayedMs = now;
 			audio.currentTime = 0;
 			try {
 				await audio.play();
-			} catch {
-				// Ignore autoplay or missing-file errors.
+			} catch (err) {
+				console.error('[sound] playback error:', err);
 			}
 		};
 
@@ -86,16 +90,21 @@ export const AppLayout: React.FC = () => {
 				const core = await import('@tauri-apps/api/core');
 				const event = await import('@tauri-apps/api/event');
 				const stopStartListening = await event.listen('stt:dictation-start', async () => {
+					console.log('[sound] dictation-start event received');
 					if (dictationState.active) {
+						console.log('[sound] ignoring - already active');
 						return;
 					}
 					dictationState.active = true;
 					try {
 						const enabled = await core.invoke<boolean>('sound_get_enabled');
+						console.log('[sound] sound_get_enabled:', enabled);
 						if (!enabled) {
 							return;
 						}
+						console.log('[sound] playing ding...');
 						await playDing();
+						console.log('[sound] ding played successfully');
 					} catch (err) {
 						console.warn('Failed to play dictation sound', err);
 					}
@@ -173,9 +182,8 @@ export const AppLayout: React.FC = () => {
 	return (
 		<div className="flex h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
 			<aside
-				className={`flex-shrink-0 transition-all duration-200 overflow-hidden ${
-					sidebarOpen ? 'w-64' : 'w-0'
-				}`}
+				className={`flex-shrink-0 transition-all duration-200 overflow-hidden ${sidebarOpen ? 'w-64' : 'w-0'
+					}`}
 			>
 				{sidebarOpen && <Sidebar />}
 			</aside>

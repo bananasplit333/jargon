@@ -2,17 +2,18 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(not(windows))]
 use tauri::{LogicalPosition, WebviewUrl, WebviewWindowBuilder};
 
 mod native_overlay;
+mod system_audio;
 
 #[cfg(windows)]
 use std::os::windows::process::ExitStatusExt;
@@ -135,7 +136,6 @@ fn emit_dictation_stop(app: &AppHandle) {
     }
 }
 
-
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn configure_overlay(app: &AppHandle) -> Result<(), String> {
     #[cfg(windows)]
@@ -145,9 +145,8 @@ fn configure_overlay(app: &AppHandle) -> Result<(), String> {
                 let size = monitor.size();
                 let position = monitor.position();
                 let width = size.width as i32;
-                let mut computed_x = position.x
-                    + (width - OVERLAY_WIDTH_PX) / 2
-                    - OVERLAY_HORIZONTAL_OFFSET_PX;
+                let mut computed_x =
+                    position.x + (width - OVERLAY_WIDTH_PX) / 2 - OVERLAY_HORIZONTAL_OFFSET_PX;
                 if computed_x < position.x {
                     computed_x = position.x;
                 }
@@ -195,7 +194,7 @@ fn set_overlay_visibility(app: &AppHandle, visible: bool) -> Result<(), String> 
     {
         if let Some(window) = app.get_webview_window("overlay") {
             if visible {
-                    let _: tauri::Result<()> = window.show();
+                let _: tauri::Result<()> = window.show();
                 let _: tauri::Result<()> = window.set_focus();
             } else {
                 let _: tauri::Result<()> = window.hide();
@@ -215,9 +214,10 @@ fn dev_workspace_root() -> PathBuf {
 
 fn resolve_script_path(app: &AppHandle) -> PathBuf {
     // In dev mode, always use workspace root; in production, use Resource directory
-    let resource_path = app.path()
+    let resource_path = app
+        .path()
         .resolve("python/main.py", tauri::path::BaseDirectory::Resource);
-    
+
     match resource_path {
         Ok(path) if path.exists() => path,
         _ => dev_workspace_root().join("python").join("main.py"),
@@ -225,9 +225,10 @@ fn resolve_script_path(app: &AppHandle) -> PathBuf {
 }
 
 fn resolve_model_dir(app: &AppHandle) -> PathBuf {
-    let resource_path = app.path()
+    let resource_path = app
+        .path()
         .resolve("data/parakeet_model", tauri::path::BaseDirectory::Resource);
-    
+
     match resource_path {
         Ok(path) if path.exists() => path,
         _ => dev_workspace_root().join("data").join("parakeet_model"),
@@ -285,9 +286,21 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
                         continue;
                     }
                 } else if value.get("type").and_then(|v| v.as_str()) == Some("dictation_start") {
+                    // Emit event first so the frontend can play the sound effect
                     emit_dictation_start(&app);
+                    // Pause any playing media
+                    if let Err(err) = system_audio::set_music_muted(true) {
+                        emit_log(&app, "audio", &format!("failed to pause media: {err}"));
+                    }
                     continue;
                 } else if value.get("type").and_then(|v| v.as_str()) == Some("dictation_stop") {
+                    if let Err(err) = system_audio::set_music_muted(false) {
+                        emit_log(
+                            &app,
+                            "audio",
+                            &format!("failed to restore audio mute state: {err}"),
+                        );
+                    }
                     emit_dictation_stop(&app);
                     continue;
                 } else if value.get("type").and_then(|v| v.as_str()) == Some("overlay_level") {
@@ -319,7 +332,10 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     };
 
     let script_path = resolve_script_path(app);
-    eprintln!("[setup] resolved Python script path: {}", script_path.display());
+    eprintln!(
+        "[setup] resolved Python script path: {}",
+        script_path.display()
+    );
     if !script_path.exists() {
         return Err(format!(
             "Python script not found at {}",
@@ -344,7 +360,11 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     args.push("--model-dir".into());
     args.push(model_dir.as_os_str().to_owned());
     args.push("--type-into-active-app".into());
-    args.push(if config.type_into_active_app { "true".into() } else { "false".into() });
+    args.push(if config.type_into_active_app {
+        "true".into()
+    } else {
+        "false".into()
+    });
 
     // On Windows prefer the launcher `py -3`; otherwise use `python`
     #[cfg(windows)]
@@ -446,7 +466,18 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
                 guard.child = None;
             }
             emit_status(&app_for_monitor, false);
-            emit_log(&app_for_monitor, "engine", &format!("python exited: {status}"));
+            emit_log(
+                &app_for_monitor,
+                "engine",
+                &format!("python exited: {status}"),
+            );
+            if let Err(err) = system_audio::set_music_muted(false) {
+                emit_log(
+                    &app_for_monitor,
+                    "audio",
+                    &format!("failed to restore audio mute state: {err}"),
+                );
+            }
             return;
         }
 
@@ -468,6 +499,13 @@ fn stop_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     }
 
     emit_status(app, false);
+    if let Err(err) = system_audio::set_music_muted(false) {
+        emit_log(
+            app,
+            "audio",
+            &format!("failed to restore audio mute state: {err}"),
+        );
+    }
     Ok(())
 }
 
@@ -559,31 +597,34 @@ fn setup_tray(app: &tauri::App) -> Result<(), tauri::Error> {
                 let _ = set_overlay_visibility(&handle, false);
             }
         })
-        .on_menu_event(|app_handle: &tauri::AppHandle, event: tauri::menu::MenuEvent| match event.id().as_ref() {
-            "show" => {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _: tauri::Result<()> = window.show();
-                    let _ = window.set_focus();
+        .on_menu_event(
+            |app_handle: &tauri::AppHandle, event: tauri::menu::MenuEvent| match event.id().as_ref()
+            {
+                "show" => {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _: tauri::Result<()> = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = set_overlay_visibility(app_handle, false);
                 }
-                let _ = set_overlay_visibility(app_handle, false);
-            }
-            "hide" => {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _: tauri::Result<()> = window.hide();
+                "hide" => {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _: tauri::Result<()> = window.hide();
+                    }
+                    let _ = set_overlay_visibility(app_handle, true);
                 }
-                let _ = set_overlay_visibility(app_handle, true);
-            }
-            "start" => {
-                let state = app_handle.state::<AppState>();
-                let _ = start_engine_inner(app_handle, &state);
-            }
-            "stop" => {
-                let state = app_handle.state::<AppState>();
-                let _ = stop_engine_inner(app_handle, &state);
-            }
-            "quit" => app_handle.exit(0),
-            _ => {}
-        })
+                "start" => {
+                    let state = app_handle.state::<AppState>();
+                    let _ = start_engine_inner(app_handle, &state);
+                }
+                "stop" => {
+                    let state = app_handle.state::<AppState>();
+                    let _ = stop_engine_inner(app_handle, &state);
+                }
+                "quit" => app_handle.exit(0),
+                _ => {}
+            },
+        )
         .build(app)?;
 
     Ok(())
@@ -619,8 +660,7 @@ pub fn run() {
                 if let Ok(Some(monitor)) = app.primary_monitor() {
                     let size = monitor.size();
                     let position = monitor.position();
-                    let mut x = position.x as f64
-                        + (size.width as f64 - default_width) / 2.0
+                    let mut x = position.x as f64 + (size.width as f64 - default_width) / 2.0
                         - OVERLAY_HORIZONTAL_OFFSET_PX as f64;
                     if x < position.x as f64 {
                         x = position.x as f64;
@@ -665,7 +705,7 @@ pub fn run() {
                             let _ = set_overlay_visibility(&overlay_event_handle, true);
                         }
                     }
-                });  
+                });
 
                 // Keep overlay always visible regardless of window focus/visibility
                 let _main_handle = window.clone();

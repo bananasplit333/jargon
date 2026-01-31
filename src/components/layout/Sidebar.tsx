@@ -36,24 +36,22 @@ const NavItem: React.FC<NavItemProps> = ({ name, Icon, to }) => (
   <NavLink
     to={to}
     className={({ isActive }) =>
-        `
+      `
         group flex items-center px-3 py-2 text-sm font-medium rounded-md transition-all duration-200
-        ${
-          isActive
-            ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-white'
-            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
-        }
-        `
+        ${isActive
+        ? 'bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-white'
+        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
       }
-    >
+        `
+    }
+  >
     {({ isActive }) => (
       <>
         <Icon
-          className={`mr-3 h-5 w-5 flex-shrink-0 transition-colors duration-200 ${
-            isActive
-              ? 'text-gray-900 dark:text-white'
-              : 'text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300'
-          }`}
+          className={`mr-3 h-5 w-5 flex-shrink-0 transition-colors duration-200 ${isActive
+            ? 'text-gray-900 dark:text-white'
+            : 'text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300'
+            }`}
         />
         {name}
       </>
@@ -102,7 +100,7 @@ export const Sidebar: React.FC = () => {
           </button>
         </div>
 
-        <nav className="space-y-1 pb-4">
+        {/* <nav className="space-y-1 pb-4">
           {utilityNav.map((item) => (
             <div
               key={item.name}
@@ -112,7 +110,7 @@ export const Sidebar: React.FC = () => {
               {item.name}
             </div>
           ))}
-        </nav>
+        </nav> */}
       </div>
     </div>
   );
