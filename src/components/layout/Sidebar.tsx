@@ -2,14 +2,7 @@
 import React from 'react';
 import {
   Home,
-  Book,
-  Layers,
-  Type,
-  FileText,
   Settings,
-  HelpCircle,
-  Users,
-  Zap,
 } from 'lucide-react';
 import jargonLogo from "../../../assets/jargon_logo.jpg";
 import { NavLink } from "react-router"
@@ -19,12 +12,6 @@ const mainNav = [
   { name: 'Settings', icon: Settings, to: '/settings' },
 ];
 
-const utilityNav = [
-  { name: 'Invite your team', icon: Users },
-  { name: 'Get a free month', icon: Zap },
-  { name: 'Settings', icon: Settings },
-  { name: 'Help', icon: HelpCircle },
-];
 
 interface NavItemProps {
   name: string;
