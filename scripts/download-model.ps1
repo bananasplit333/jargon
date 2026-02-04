@@ -1,14 +1,20 @@
 # Download Parakeet Model Script
 # This script downloads the sherpa-onnx parakeet model if it doesn't exist
 
-$MODEL_DIR = "data/parakeet_model"
+$ROOT = Resolve-Path (Join-Path $PSScriptRoot "..")
+$MODEL_DIR = Join-Path $ROOT "data/parakeet_model"
 $MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
-$MODEL_ARCHIVE = "parakeet-model.tar.bz2"
+$MODEL_ARCHIVE = Join-Path $ROOT ("parakeet-model-" + [System.Guid]::NewGuid().ToString() + ".tar.bz2")
 
 Write-Host "Downloading Parakeet model..."
 
-# Clean existing model directory and recreate
+# If model already exists, skip download
 if (Test-Path $MODEL_DIR) {
+    $existing = Get-ChildItem -Recurse -File $MODEL_DIR -ErrorAction SilentlyContinue
+    if ($existing.Count -gt 0) {
+        Write-Host "Model already present. Skipping download."
+        exit 0
+    }
     Remove-Item -Recurse -Force $MODEL_DIR
 }
 New-Item -ItemType Directory -Force -Path $MODEL_DIR | Out-Null

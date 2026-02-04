@@ -235,7 +235,12 @@ mod platform {
     }
 
     fn overlay_ex_style_flags() -> WINDOW_EX_STYLE {
-        WINDOW_EX_STYLE(winmsg::WS_EX_LAYERED.0 | winmsg::WS_EX_TOOLWINDOW.0 | winmsg::WS_EX_TOPMOST.0)
+        WINDOW_EX_STYLE(
+            winmsg::WS_EX_LAYERED.0
+                | winmsg::WS_EX_TOOLWINDOW.0
+                | winmsg::WS_EX_TOPMOST.0
+                | winmsg::WS_EX_NOACTIVATE.0,
+        )
     }
 
     fn spawn_overlay_thread_and_get_hwnd() -> Result<HWND, Error> {
