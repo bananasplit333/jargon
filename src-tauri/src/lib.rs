@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -16,7 +18,10 @@ mod native_overlay;
 mod system_audio;
 
 #[cfg(windows)]
-use std::os::windows::process::ExitStatusExt;
+use std::os::windows::process::{CommandExt, ExitStatusExt};
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +263,16 @@ fn emit_transcript(app: &AppHandle, text: &str) {
     );
 }
 
+fn log_to_file(message: &str) {
+    let log_path = dev_workspace_root().join("jargon_engine.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = writeln!(file, "{}", message);
+    }
+}
+
 fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
     app: AppHandle,
     stream_name: &'static str,
@@ -266,6 +281,7 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
     std::thread::spawn(move || {
         let buf = BufReader::new(reader);
         for line in buf.lines().flatten() {
+            log_to_file(&format!("[python:{stream_name}] {line}"));
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
                 if value.get("type").and_then(|v| v.as_str()) == Some("overlay") {
                     if let Some(hover) = value.get("hover").and_then(|v| v.as_bool()) {
@@ -332,15 +348,15 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     };
 
     let script_path = resolve_script_path(app);
+    log_to_file(&format!("[setup] resolved Python script path: {}", script_path.display()));
     eprintln!(
         "[setup] resolved Python script path: {}",
         script_path.display()
     );
     if !script_path.exists() {
-        return Err(format!(
-            "Python script not found at {}",
-            script_path.display()
-        ));
+        let msg = format!("Python script not found at {}", script_path.display());
+        log_to_file(&format!("[error] {msg}"));
+        return Err(msg);
     }
 
     let model_dir = resolve_model_dir(app);
@@ -348,6 +364,8 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| dev_workspace_root().join("python"));
+    log_to_file(&format!("[setup] python cwd: {}", python_dir.display()));
+    log_to_file(&format!("[setup] model dir: {}", model_dir.display()));
 
     // Build common args: run unbuffered for immediate stdout
     let mut args: Vec<std::ffi::OsString> = Vec::new();
@@ -366,42 +384,69 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
         "false".into()
     });
 
-    // On Windows prefer the launcher `py -3`; otherwise use `python`
+    // On Windows prefer pyw (launcher) to avoid console window; fallback to pythonw/python
     #[cfg(windows)]
     let mut child = {
-        let mut py_cmd = Command::new("py");
-        let mut py_args = Vec::with_capacity(args.len() + 1);
-        py_args.push("-3".into());
-        py_args.extend(args.iter().cloned());
+        let mut pyw_cmd = Command::new("pyw");
+        let mut pyw_args = Vec::with_capacity(args.len() + 1);
+        pyw_args.push("-3".into());
+        pyw_args.extend(args.iter().cloned());
         eprintln!("[engine] spawn cwd: {}", python_dir.display());
-        eprintln!("[engine] spawn cmd: py {:?}", py_args);
-        py_cmd
-            .args(&py_args)
+        eprintln!("[engine] spawn cmd: pyw {:?}", pyw_args);
+        pyw_cmd
+            .args(&pyw_args)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(python_dir.clone());
-        match py_cmd.spawn() {
+            .current_dir(python_dir.clone())
+            .creation_flags(CREATE_NO_WINDOW);
+        match pyw_cmd.spawn() {
             Ok(ch) => {
-                eprintln!("[engine] started with 'py -3 -m main' (preferred)");
+                eprintln!("[engine] started with 'pyw -3 -m main'");
+                log_to_file("[engine] started with 'pyw -3 -m main'");
                 ch
             }
-            Err(py_err) => {
-                let mut command = Command::new("python");
-                eprintln!("[engine] fallback spawn cmd: python {:?}", args);
+            Err(pyw_err) => {
+                log_to_file(&format!("[error] pyw spawn failed: {pyw_err}"));
+                let mut command = Command::new("pythonw");
+                eprintln!("[engine] fallback spawn cmd: pythonw {:?}", args);
                 command
                     .args(&args)
+                    .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
-                    .current_dir(python_dir.clone());
+                    .current_dir(python_dir.clone())
+                    .creation_flags(CREATE_NO_WINDOW);
                 match command.spawn() {
                     Ok(ch) => {
-                        eprintln!("[engine] 'py -3 -m main' failed: {py_err}; started with 'python -m main'");
+                        eprintln!("[engine] started with 'pythonw -m main'");
+                        log_to_file("[engine] started with 'pythonw -m main'");
                         ch
                     }
-                    Err(py_fallback_err) => {
-                        return Err(format!(
-                            "Failed to start Python: py -3 error: {py_err}; python error: {py_fallback_err}"
-                        ));
+                    Err(py_err) => {
+                        log_to_file(&format!("[error] pythonw spawn failed: {py_err}"));
+                        let mut fallback = Command::new("python");
+                        fallback
+                            .args(&args)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .current_dir(python_dir.clone())
+                            .creation_flags(CREATE_NO_WINDOW);
+                        match fallback.spawn() {
+                            Ok(ch) => {
+                                eprintln!("[engine] started with 'python -m main'");
+                                log_to_file("[engine] started with 'python -m main'");
+                                ch
+                            }
+                            Err(err) => {
+                                let msg = format!(
+                                    "Failed to start Python: pyw error: {pyw_err}; pythonw error: {py_err}; python error: {err}"
+                                );
+                                log_to_file(&format!("[error] {msg}"));
+                                return Err(msg);
+                            }
+                        }
                     }
                 }
             }
@@ -585,18 +630,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), tauri::Error> {
         .item(&quit)
         .build()?;
 
+    let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
+        .expect("failed to load tray icon");
+
     TrayIconBuilder::new()
+        .icon(tray_icon)
         .menu(&menu)
-        .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {
-            if matches!(event, TrayIconEvent::Click { .. }) {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _: tauri::Result<()> = window.show();
-                    let _ = window.set_focus();
-                }
-                let handle = tray.app_handle();
-                let _ = set_overlay_visibility(&handle, false);
-            }
-        })
         .on_menu_event(
             |app_handle: &tauri::AppHandle, event: tauri::menu::MenuEvent| match event.id().as_ref()
             {
@@ -634,6 +673,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), tauri::Error> {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _: tauri::Result<()> = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             setup_tray(app)?;

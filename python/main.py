@@ -57,6 +57,8 @@ recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
 )
 
 print("onionsonsale!")
+sys.stdout.write(json.dumps({"type": "engine_ready"}) + "\n")
+sys.stdout.flush()
 
 # --- AUDIO CALLBACK ---
 def audio_callback(indata, frames, time, status):
