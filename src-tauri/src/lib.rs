@@ -141,6 +141,24 @@ fn emit_dictation_stop(app: &AppHandle) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stt_config_defaults() {
+        let config = SttConfig::default();
+        assert_eq!(config.hotkey, "Ctrl+Shift");
+        assert!(config.run_in_background);
+        assert!(config.type_into_active_app);
+    }
+
+    #[test]
+    fn now_millis_nonzero() {
+        assert!(now_millis() > 0);
+    }
+}
+
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn configure_overlay(app: &AppHandle) -> Result<(), String> {
     #[cfg(windows)]
