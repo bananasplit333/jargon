@@ -39,7 +39,8 @@
     ],
     "resources": {
       "../data/parakeet_model/*": "data/parakeet_model/",
-      "../python/*.py": "python/"
+      "../python/*.py": "python/",
+      "python_embedded": "python_embedded/"
     }
   }
 }

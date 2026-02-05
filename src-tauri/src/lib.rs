@@ -258,6 +258,26 @@ fn resolve_model_dir(app: &AppHandle) -> PathBuf {
     }
 }
 
+fn resolve_embedded_python_dir(app: &AppHandle) -> Option<PathBuf> {
+    let resource_path = app
+        .path()
+        .resolve("python_embedded", tauri::path::BaseDirectory::Resource)
+        .ok();
+
+    if let Some(path) = resource_path {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("python_embedded");
+    if dev_path.exists() {
+        return Some(dev_path);
+    }
+
+    None
+}
+
 fn emit_status(app: &AppHandle, running: bool) {
     let _ = app.emit("stt:status", SttStatus { running });
 }
@@ -388,27 +408,91 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
     // Build common args: run unbuffered for immediate stdout
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     args.push("-u".into());
-    // Run in module mode from the python directory, matching manual run
-    args.push("-m".into());
-    args.push("main".into());
-    args.push("--hotkey".into());
-    args.push(config.hotkey.clone().into());
-    args.push("--model-dir".into());
-    args.push(model_dir.as_os_str().to_owned());
-    args.push("--type-into-active-app".into());
-    args.push(if config.type_into_active_app {
-        "true".into()
-    } else {
-        "false".into()
-    });
 
-    // On Windows prefer pyw (launcher) to avoid console window; fallback to pythonw/python
+    // On Windows prefer embedded python; fallback to pyw/pythonw/python
     #[cfg(windows)]
     let mut child = {
+        let embedded_child = if let Some(embedded_dir) = resolve_embedded_python_dir(app) {
+            let pythonw = embedded_dir.join("pythonw.exe");
+            if pythonw.exists() {
+                let mut command = Command::new(&pythonw);
+                eprintln!("[engine] spawn cwd: {}", python_dir.display());
+                
+                // For embedded, pass the script path directly to avoid ._pth ignoring PYTHONPATH
+                let mut embedded_args = args.clone();
+                embedded_args.push(script_path.clone().into());
+                embedded_args.push("--hotkey".into());
+                embedded_args.push(config.hotkey.clone().into());
+                embedded_args.push("--model-dir".into());
+                embedded_args.push(model_dir.as_os_str().to_owned());
+                embedded_args.push("--type-into-active-app".into());
+                embedded_args.push(if config.type_into_active_app {
+                    "true".into()
+                } else {
+                    "false".into()
+                });
+
+                eprintln!("[engine] spawn cmd: {:?} {:?}", pythonw, embedded_args);
+                log_to_file(&format!(
+                    "[engine] using embedded python at {}",
+                    pythonw.display()
+                ));
+                command
+                    .args(&embedded_args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .current_dir(python_dir.clone())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .env("PYTHONHOME", &embedded_dir)
+                    .env("PYTHONNOUSERSITE", "1");
+                
+                if let Ok(path) = std::env::var("PATH") {
+                    command.env("PATH", format!("{};{}", embedded_dir.display(), path));
+                } else {
+                    command.env("PATH", embedded_dir.display().to_string());
+                }
+                match command.spawn() {
+                    Ok(ch) => {
+                        eprintln!("[engine] started with embedded pythonw");
+                        log_to_file("[engine] started with embedded pythonw");
+                        Some(ch)
+                    }
+                    Err(err) => {
+                        log_to_file(&format!("[error] embedded python spawn failed: {err}"));
+                        None
+                    }
+                }
+            } else {
+                log_to_file("[warn] embedded pythonw.exe not found; falling back");
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(ch) = embedded_child {
+            ch
+        } else {
+        // Fallback to system python using -m main
+        let mut py_args = args.clone();
+        py_args.push("-m".into());
+        py_args.push("main".into());
+        py_args.push("--hotkey".into());
+        py_args.push(config.hotkey.clone().into());
+        py_args.push("--model-dir".into());
+        py_args.push(model_dir.as_os_str().to_owned());
+        py_args.push("--type-into-active-app".into());
+        py_args.push(if config.type_into_active_app {
+            "true".into()
+        } else {
+            "false".into()
+        });
+
         let mut pyw_cmd = Command::new("pyw");
-        let mut pyw_args = Vec::with_capacity(args.len() + 1);
+        let mut pyw_args = Vec::with_capacity(py_args.len() + 1);
         pyw_args.push("-3".into());
-        pyw_args.extend(args.iter().cloned());
+        pyw_args.extend(py_args.iter().cloned());
         eprintln!("[engine] spawn cwd: {}", python_dir.display());
         eprintln!("[engine] spawn cmd: pyw {:?}", pyw_args);
         pyw_cmd
@@ -427,9 +511,9 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
             Err(pyw_err) => {
                 log_to_file(&format!("[error] pyw spawn failed: {pyw_err}"));
                 let mut command = Command::new("pythonw");
-                eprintln!("[engine] fallback spawn cmd: pythonw {:?}", args);
+                eprintln!("[engine] fallback spawn cmd: pythonw {:?}", py_args);
                 command
-                    .args(&args)
+                    .args(&py_args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -445,7 +529,7 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
                         log_to_file(&format!("[error] pythonw spawn failed: {py_err}"));
                         let mut fallback = Command::new("python");
                         fallback
-                            .args(&args)
+                            .args(&py_args)
                             .stdin(Stdio::null())
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
@@ -468,6 +552,7 @@ fn start_engine_inner(app: &AppHandle, state: &AppState) -> Result<(), String> {
                     }
                 }
             }
+        }
         }
     };
 

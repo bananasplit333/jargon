@@ -2,18 +2,31 @@ print("[python] Engine starting…", flush=True)
 import sys
 import os
 import argparse
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(__file__))
+
 import sherpa_onnx
 import sounddevice as sd
 from pynput import keyboard
 import json
 import pyautogui
 import queue
-import numpy as np
 import threading
 import time
 import ctypes
 from ctypes import wintypes
-from audio_utils import resample_audio
+try:
+    from audio_utils import resample_audio
+except Exception:
+    def resample_audio(audio, src_rate, target_rate):
+        if src_rate == target_rate or audio.size == 0:
+            return audio
+        duration = audio.shape[0] / float(src_rate)
+        target_length = max(1, int(duration * target_rate))
+        src_times = np.linspace(0, duration, num=audio.shape[0], endpoint=False)
+        target_times = np.linspace(0, duration, num=target_length, endpoint=False)
+        return np.interp(target_times, src_times, audio).astype(np.float32)
 
 # --- CONFIGURATION (defaults; override via CLI args) ---
 MODEL_DIR = "../data/parakeet_model"
