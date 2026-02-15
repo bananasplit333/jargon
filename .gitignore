@@ -38,3 +38,7 @@ data/parakeet_model/
 # Tauri build files
 /src-tauri/target
 /src-tauri/gen
+/src-tauri/python_embedded
+*.bak
+test_*.py
+find_dll.py
